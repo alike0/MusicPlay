@@ -1,148 +1,112 @@
 package com.example.musicplayer;
 
-import android.media.MediaPlayer;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.os.Bundle;
-import android.os.Handler;
-import android.view.View;
-import android.widget.AdapterView;
+import android.os.IBinder;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.SeekBar;
-import android.widget.Spinner;
+import android.widget.ListView;
+import android.widget.TextView;
+
 import androidx.appcompat.app.AppCompatActivity;
 
 public class MainActivity extends AppCompatActivity {
-    private MediaPlayer mediaPlayer;
-    private Button playButton, pauseButton, stopButton;
-    private SeekBar seekBar;
-    private Spinner songSpinner;
-    private Handler handler = new Handler();
+    // 歌曲数组
     private String[] songs = {"jay", "spacewalk", "takethejourney", "wildfire", "interstellarjourney"};
+    // 播放状态文本视图
+    private TextView playbackStatusText;
+    // MusicService 实例
+    private MusicService musicService;
+    // MusicService 是否已绑定的标志
+    private boolean isBound = false;
+
+    // 服务连接对象
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            // 获取 MusicService 实例
+            MusicService.MusicBinder binder = (MusicService.MusicBinder) service;
+            musicService = binder.getService();
+            isBound = true;
+            // 更新播放状态
+            updatePlaybackStatus();
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            isBound = false;
+        }
+    };
+
+    // 广播接收器用于接收播放状态变化的广播
+    private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (MusicService.ACTION_STATUS_CHANGED.equals(intent.getAction())) {
+                // 获取播放状态
+                boolean isPlaying = intent.getBooleanExtra("isPlaying", false);
+                // 更新播放状态文本视图
+                playbackStatusText.setText("播放状态：" + (isPlaying ? "播放中" : "已停止"));
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        initializeViews();
-        setupSpinner();
-        setupSeekBar();
-        setupButtons();
-    }
+        // 获取歌曲列表视图并设置适配器
+        ListView listView = findViewById(R.id.song_list_view);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, songs);
+        listView.setAdapter(adapter);
 
-    private void initializeViews() {
-        playButton = findViewById(R.id.btn_play);
-        pauseButton = findViewById(R.id.btn_pause);
-        stopButton = findViewById(R.id.btn_stop);
-        seekBar = findViewById(R.id.seekBar);
-        songSpinner = findViewById(R.id.song_spinner);
-    }
-
-    private void setupSpinner() {
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, songs);
-        songSpinner.setAdapter(adapter);
-        songSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                resetMediaPlayer();
-                initializeMediaPlayer(position);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
+        // 设置歌曲列表项点击事件，点击进入播放界面
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            Intent intent = new Intent(MainActivity.this, PlayerActivity.class);
+            intent.putExtra("songName", songs[position]);
+            startActivity(intent);
         });
-    }
 
-    private void resetMediaPlayer() {
-        if (mediaPlayer != null) {
-            mediaPlayer.release();
-            mediaPlayer = null;
-        }
-        seekBar.setProgress(0);
-    }
-
-    private void initializeMediaPlayer(int songPosition) {
-        int resourceId = getResources().getIdentifier(songs[songPosition], "raw", getPackageName());
-        if (resourceId != 0) {
-            mediaPlayer = MediaPlayer.create(MainActivity.this, resourceId);
-            mediaPlayer.setOnPreparedListener(mp -> {
-                seekBar.setMax(mediaPlayer.getDuration());
-                playAudio();  // Auto-start the media upon preparation
-            });
-            mediaPlayer.setOnCompletionListener(mp -> stopAudio());
-        }
-    }
-
-    private void setupSeekBar() {
-        seekBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (mediaPlayer != null && fromUser) {
-                    mediaPlayer.seekTo(progress);
-                }
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar seekBar) {}
-
-            @Override
-            public void onStopTrackingTouch(SeekBar seekBar) {}
+        // 获取播放状态文本视图和播放按钮
+        playbackStatusText = findViewById(R.id.playback_status_text);
+        Button playbackButton = findViewById(R.id.playback_button);
+        // 播放按钮点击事件，点击跳转到播放界面
+        playbackButton.setOnClickListener(v -> {
+            Intent intent = new Intent(MainActivity.this, PlayerActivity.class);
+            startActivity(intent);
         });
+
+        // 绑定到 MusicService
+        Intent intent = new Intent(this, MusicService.class);
+        bindService(intent, connection, BIND_AUTO_CREATE);
+        // 注册广播接收器以接收播放状态变化的广播
+        IntentFilter filter = new IntentFilter(MusicService.ACTION_STATUS_CHANGED);
+        registerReceiver(statusReceiver, filter);
     }
 
-    private void setupButtons() {
-        playButton.setOnClickListener(v -> playAudio());
-        pauseButton.setOnClickListener(v -> pauseAudio());
-        stopButton.setOnClickListener(v -> stopAudio());
-    }
-
-    private void playAudio() {
-        if (mediaPlayer == null) {
-            int songPosition = songSpinner.getSelectedItemPosition();
-            initializeMediaPlayer(songPosition);
-        }
-        if (mediaPlayer != null && !mediaPlayer.isPlaying()) {
-            mediaPlayer.start();
-            startUpdatingSeekBar();
-        }
-    }
-
-
-    private void pauseAudio() {
-        if (mediaPlayer != null && mediaPlayer.isPlaying()) {
-            mediaPlayer.pause();
-        }
-    }
-
-    private void stopAudio() {
-        if (mediaPlayer != null) {
-            mediaPlayer.stop();
-            mediaPlayer.release();
-            mediaPlayer = null;
-        }
-        seekBar.setProgress(0);
-        handler.removeCallbacksAndMessages(null);
-    }
-
-    private void startUpdatingSeekBar() {
-        handler.postDelayed(this::updateSeekBar, 1000);
-    }
-
-    private void updateSeekBar() {
-        if (mediaPlayer != null && mediaPlayer.isPlaying()) {
-            seekBar.setProgress(mediaPlayer.getCurrentPosition());
-            handler.postDelayed(this::updateSeekBar, 1000);
-        } else {
-            handler.removeCallbacksAndMessages(null);
+    // 更新播放状态
+    private void updatePlaybackStatus() {
+        if (isBound && musicService != null) {
+            // 获取当前播放状态并更新播放状态文本视图
+            String status = musicService.isPlaying() ? "播放中" : "已停止";
+            playbackStatusText.setText("播放状态：" + status);
         }
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (mediaPlayer != null) {
-            mediaPlayer.release();
-            mediaPlayer = null;
+        // 解绑服务和注销广播接收器
+        if (isBound) {
+            unbindService(connection);
+            isBound = false;
         }
+        unregisterReceiver(statusReceiver);
     }
 }
